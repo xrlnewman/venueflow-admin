@@ -1,0 +1,5 @@
+.secondary{border:1px solid #d7e3ea;border-radius:9px;background:#fff;color:#2d5d74;padding:11px 15px;font:inherit;font-weight:700;cursor:pointer}
+.secondary:disabled{opacity:.6;cursor:wait}
+.heading-actions{display:flex;gap:10px;align-items:center}
+.top-meta b.offline{color:#c47b14}
+@media(max-width:640px){.heading-actions{margin-top:18px}.heading-actions .primary{margin-top:0}}

@@ -1,0 +1,29 @@
+services:
+  api:
+    image: venueflow-api:local
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    ports: ["${VENUEFLOW_HTTP_PORT:-8080}:8080"]
+    environment:
+      MYSQL_DSN: "venueflow:venueflow@tcp(mysql:3306)/venueflow?parseTime=true&charset=utf8mb4"
+      REDIS_ADDR: "redis:6379"
+      HTTP_ADDR: ":8080"
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  mysql:
+    image: mysql:8.4
+    environment: { MYSQL_DATABASE: venueflow, MYSQL_USER: venueflow, MYSQL_PASSWORD: venueflow, MYSQL_ROOT_PASSWORD: change-me }
+    volumes: ["./mysql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro"]
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    healthcheck:
+      test: ["CMD-SHELL", "mysql --protocol=TCP --host=127.0.0.1 --user=venueflow --password=venueflow --database=venueflow -e 'SELECT 1' >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  redis:
+    image: redis:8-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20

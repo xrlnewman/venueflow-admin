@@ -1,0 +1,19 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+test('VenueFlow dashboard has dispatch data and navigation', async () => {
+  const source = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
+  assert.match(source, /活动订单调度/)
+  assert.match(source, /实时线路/)
+  assert.match(source, /场地事件中心/)
+  assert.match(source, /FF-260716-018/)
+})
+
+test('VenueFlow writes use API and idempotency keys', async () => {
+  const api = await readFile(new URL('../src/api.js', import.meta.url), 'utf8')
+  const source = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
+  assert.match(api, /Idempotency-Key/)
+  assert.match(source, /fleetApi\.assignShipment/)
+  assert.match(source, /fleetApi\.resolveException/)
+  assert.match(source, /fleetApi\.confirmSettlement/)
+})
