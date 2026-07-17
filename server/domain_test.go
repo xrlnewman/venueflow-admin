@@ -22,7 +22,7 @@ func TestShipmentLifecycle(t *testing.T) {
 	if _, err = store.transitionShipment(ctx, created.ID, ShipmentInTransit, "场馆工作人员", "已接单出发"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.transitionShipment(ctx, created.ID, ShipmentDelivered, "场馆工作人员", "已到达收货点"); err != nil {
+	if _, err = store.transitionShipment(ctx, created.ID, ShipmentDelivered, "场馆工作人员", "活动已完成撤场"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = store.transitionShipment(ctx, created.ID, ShipmentCompleted, "收货人", "已签收"); err != nil {
