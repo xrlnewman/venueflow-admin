@@ -27,4 +27,6 @@ test('VenueFlow exposes session ticketing and settlement operations', async () =
   assert.match(source, /场次票务日结/)
   assert.match(source, /票码唯一校验/)
   assert.match(source, /完成日结/)
+  assert.match(source, /pending-settlement/)
+  assert.match(source, /进入结算/)
 })

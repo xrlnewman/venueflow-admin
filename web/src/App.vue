@@ -53,6 +53,7 @@ async function sessionAction(item, action) {
     if (action === 'publish') await venueApi.publish(item.id)
     if (action === 'sell') await venueApi.sell(item.id, 1)
     if (action === 'active') await venueApi.advance(item.id, '活动中')
+    if (action === 'pending-settlement') await venueApi.advance(item.id, '待结算')
     if (action === 'settle') await venueApi.settle(item.id)
     flash(`${item.title} 已完成${action === 'sell' ? '售票' : action === 'settle' ? '日结' : '状态更新'}`); await refresh()
   } catch (error) { flash(error.message) }
@@ -61,7 +62,7 @@ function sessionActionLabel(item) {
   if (item.status === '草稿') return ['publish', '发布排期']
   if (item.status === '已排期') return ['sell', '开始售票']
   if (item.status === '售票中') return ['active', '标记活动中']
-  if (item.status === '活动中') return ['settle', '进入日结']
+  if (item.status === '活动中') return ['pending-settlement', '进入结算']
   if (item.status === '待结算') return ['settle', '完成日结']
   return ['', '已结算']
 }

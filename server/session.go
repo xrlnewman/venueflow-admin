@@ -225,7 +225,7 @@ func allowedSessionTransition(from, to string) bool {
 	allowed := map[string]map[string]bool{
 		SessionDraft:             {SessionScheduled: true},
 		SessionScheduled:         {SessionSelling: true},
-		SessionSelling:           {SessionActive: true, SessionPendingSettlement: true},
+		SessionSelling:           {SessionActive: true},
 		SessionActive:            {SessionPendingSettlement: true},
 		SessionPendingSettlement: {SessionSettled: true},
 		SessionSettled:           {},
