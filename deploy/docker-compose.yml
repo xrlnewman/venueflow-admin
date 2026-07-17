@@ -19,7 +19,7 @@ services:
       test: ["CMD-SHELL", "mysql --protocol=TCP --host=127.0.0.1 --user=venueflow --password=venueflow --database=venueflow -e 'SELECT 1' >/dev/null 2>&1"]
       interval: 5s
       timeout: 5s
-      retries: 30
+      retries: 60
   redis:
     image: redis:8-alpine
     healthcheck:
