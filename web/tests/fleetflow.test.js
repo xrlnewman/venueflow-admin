@@ -6,7 +6,7 @@ test('VenueFlow dashboard has dispatch data and navigation', async () => {
   assert.match(source, /活动订单调度/)
   assert.match(source, /实时线路/)
   assert.match(source, /场地事件中心/)
-  assert.match(source, /FF-260716-018/)
+  assert.match(source, /VN-260716-018/)
 })
 
 test('VenueFlow writes use API and idempotency keys', async () => {

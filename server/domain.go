@@ -10,10 +10,10 @@ import (
 )
 
 const (
-	ShipmentPendingDispatch = "待调度"
-	ShipmentPendingAccept   = "待接单"
-	ShipmentInTransit       = "现场服务中"
-	ShipmentDelivered       = "已送达"
+	ShipmentPendingDispatch = "待预订"
+	ShipmentPendingAccept   = "已锁场"
+	ShipmentInTransit       = "进行中"
+	ShipmentDelivered       = "待结算"
 	ShipmentCompleted       = "已完成"
 	ShipmentCancelled       = "已取消"
 )
@@ -71,8 +71,8 @@ type memoryStore struct {
 
 func newMemoryStore() *memoryStore {
 	s := &memoryStore{shipments: map[string]Shipment{}, events: map[string][]ShipmentEvent{}, exceptions: map[string]Exception{}, nextEventID: 1}
-	s.drivers = []Driver{{"D-001", "周师傅", "13800000001", "沪A·72K31", "现场服务中"}, {"D-002", "陈师傅", "13800000002", "沪B·18Q90", "现场服务中"}, {"D-003", "林师傅", "13800000003", "沪C·39P06", "休息中"}, {"D-004", "王师傅", "13800000004", "沪D·55L18", "现场服务中"}, {"D-005", "赵师傅", "13800000005", "沪E·03R88", "现场服务中"}, {"D-006", "孙师傅", "13800000006", "沪F·61P72", "现场服务中"}}
-	s.vehicles = []Vehicle{{"V-001", "沪A·72K31", "冷链车", "在线"}, {"V-002", "沪B·18Q90", "厢式货车", "在线"}, {"V-003", "沪C·39P06", "冷链车", "维护"}, {"V-004", "沪D·55L18", "厢式货车", "在线"}}
+	s.drivers = []Driver{{"D-001", "周协调员", "13800000001", "A 厅 · 500 人", "进行中"}, {"D-002", "陈协调员", "13800000002", "B 厅 · 300 人", "进行中"}, {"D-003", "林协调员", "13800000003", "草坪 · 800 人", "休息中"}, {"D-004", "王协调员", "13800000004", "剧场 · 600 人", "进行中"}, {"D-005", "赵协调员", "13800000005", "会议室 · 80 人", "进行中"}, {"D-006", "孙协调员", "13800000006", "露台 · 120 人", "进行中"}}
+	s.vehicles = []Vehicle{{"V-001", "A 厅", "会展中心", "在线"}, {"V-002", "B 厅", "艺术馆", "在线"}, {"V-003", "草坪", "城市公园", "维护"}, {"V-004", "剧场", "文化中心", "在线"}}
 	now := time.Now().UTC()
 	for i := 0; i < 12; i++ {
 		id := fmt.Sprintf("FF-%s-%03d", now.Format("060102"), 18-i)
@@ -84,9 +84,9 @@ func newMemoryStore() *memoryStore {
 		} else if i == 3 {
 			status = ShipmentCompleted
 		}
-		_, _ = s.createShipment(context.Background(), Shipment{ID: id, Route: fmt.Sprintf("%s → %s", []string{"浦东", "虹桥", "杨浦", "闵行"}[i%4], []string{"静安", "徐汇", "宝山", "长宁"}[(i+1)%4]), Cargo: fmt.Sprintf("日配活动物料 %d 箱", 8+i), Driver: s.drivers[i%len(s.drivers)].Name, Vehicle: s.drivers[i%len(s.drivers)].Vehicle, ETA: fmt.Sprintf("%02d:%02d", 14+i/2, (i%2)*30), Status: status, CreatedAt: now.Add(-time.Duration(i) * time.Hour)})
+		_, _ = s.createShipment(context.Background(), Shipment{ID: id, Route: fmt.Sprintf("%s → %s", []string{"会展中心", "艺术馆", "城市公园", "文化中心"}[i%4], []string{"A 厅", "B 厅", "草坪", "剧场"}[(i+1)%4]), Cargo: fmt.Sprintf("品牌发布会 · %d 人", 80+i*20), Driver: s.drivers[i%len(s.drivers)].Name, Vehicle: s.drivers[i%len(s.drivers)].Vehicle, ETA: fmt.Sprintf("%02d:%02d", 14+i/2, (i%2)*30), Status: status, CreatedAt: now.Add(-time.Duration(i) * time.Hour)})
 	}
-	for i, e := range []Exception{{"EX-041", "FF-" + now.Format("060102") + "-018", "超时预警", "预计晚到 18 分钟", "高", "待处理", &now, nil}, {"EX-040", "FF-" + now.Format("060102") + "-017", "地址确认", "收货人电话无人接听", "中", "待处理", &now, nil}, {"EX-039", "FF-" + now.Format("060102") + "-016", "场地资源告警", "需要补充冷链温度记录", "低", "待处理", &now, nil}} {
+	for i, e := range []Exception{{"EX-041", "FF-" + now.Format("060102") + "-018", "设备告警", "主会场音响需要复检", "高", "待处理", &now, nil}, {"EX-040", "FF-" + now.Format("060102") + "-017", "布场确认", "签到台物料尚未入场", "中", "待处理", &now, nil}, {"EX-039", "FF-" + now.Format("060102") + "-016", "场地资源告警", "需要确认延迟撤场服务", "低", "待处理", &now, nil}} {
 		e.ID = fmt.Sprintf("EX-%03d", 41-i)
 		s.exceptions[e.ID] = e
 	}
@@ -142,7 +142,7 @@ func (s *memoryStore) assignShipment(_ context.Context, id, driver, actor string
 	item.Status = ShipmentPendingAccept
 	item.UpdatedAt = time.Now().UTC()
 	s.shipments[id] = item
-	s.appendEventLocked(id, ShipmentPendingDispatch, ShipmentPendingAccept, actor, "已分配场馆工作人员")
+	s.appendEventLocked(id, ShipmentPendingDispatch, ShipmentPendingAccept, actor, "已分配场馆协调员")
 	return item, nil
 }
 
