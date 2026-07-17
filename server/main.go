@@ -83,7 +83,7 @@ func fail(c *gin.Context, err error) {
 	if errors.Is(err, errNotFound) {
 		status = http.StatusNotFound
 	}
-	if errors.Is(err, errInvalidTransition) || strings.Contains(err.Error(), "处理中") {
+	if errors.Is(err, errInvalidTransition) || errors.Is(err, errDuplicate) || errors.Is(err, errInventoryExceeded) || strings.Contains(err.Error(), "处理中") {
 		status = http.StatusConflict
 	}
 	if strings.Contains(err.Error(), "不能为空") || strings.Contains(err.Error(), "请求") {
@@ -93,6 +93,10 @@ func fail(c *gin.Context, err error) {
 }
 
 func (a *app) write(c *gin.Context, key, resource string, fn func() (any, error)) {
+	a.writeStatus(c, key, resource, http.StatusOK, fn)
+}
+
+func (a *app) writeStatus(c *gin.Context, key, resource string, successStatus int, fn func() (any, error)) {
 	if strings.TrimSpace(key) == "" {
 		fail(c, errors.New("请求必须携带 Idempotency-Key"))
 		return
@@ -109,7 +113,7 @@ func (a *app) write(c *gin.Context, key, resource string, fn func() (any, error)
 			return
 		}
 		c.Header("X-Idempotent-Replay", "true")
-		ok(c, data)
+		respond(c, successStatus, data, "ok")
 		return
 	}
 	release, err := a.idem.Lock(ctx, cacheKey)
@@ -122,7 +126,7 @@ func (a *app) write(c *gin.Context, key, resource string, fn func() (any, error)
 		var data any
 		_ = json.Unmarshal([]byte(raw), &data)
 		c.Header("X-Idempotent-Replay", "true")
-		ok(c, data)
+		respond(c, successStatus, data, "ok")
 		return
 	}
 	data, err := fn()
@@ -135,7 +139,7 @@ func (a *app) write(c *gin.Context, key, resource string, fn func() (any, error)
 		fail(c, err)
 		return
 	}
-	ok(c, data)
+	respond(c, successStatus, data, "ok")
 }
 
 func (a *app) routes() *gin.Engine {
@@ -145,6 +149,99 @@ func (a *app) routes() *gin.Engine {
 		ok(c, gin.H{"service": "venueflow", "time": time.Now().UTC(), "storage": fmt.Sprintf("%T", a.store)})
 	})
 	api := r.Group("/api/v1")
+	api.GET("/venues", func(c *gin.Context) {
+		list := a.store.listVenues(c)
+		ok(c, gin.H{"list": list, "total": len(list)})
+	})
+	api.GET("/sessions", func(c *gin.Context) {
+		page, size := pageParams(c)
+		list, total := a.store.listSessions(c, c.Query("status"), page, size)
+		ok(c, gin.H{"list": list, "total": total, "page": page, "pageSize": size})
+	})
+	api.GET("/sessions/:id", func(c *gin.Context) {
+		item, err := a.store.getSession(c, c.Param("id"))
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		ok(c, item)
+	})
+	api.GET("/sessions/:id/events", func(c *gin.Context) {
+		events, err := a.store.listSessionEvents(c, c.Param("id"))
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		ok(c, events)
+	})
+	api.POST("/sessions", func(c *gin.Context) {
+		var body struct {
+			VenueID, Title, StartsAt, EndsAt string
+			Capacity                         int
+			Price                            float64
+		}
+		if c.ShouldBindJSON(&body) != nil {
+			fail(c, errors.New("请求体格式不正确"))
+			return
+		}
+		starts, err1 := time.Parse(time.RFC3339, body.StartsAt)
+		ends, err2 := time.Parse(time.RFC3339, body.EndsAt)
+		if err1 != nil || err2 != nil {
+			fail(c, errInvalidInput)
+			return
+		}
+		in := Session{ID: fmt.Sprintf("VS-%s", time.Now().UTC().Format("060102150405.000")), VenueID: body.VenueID, Title: body.Title, StartsAt: starts, EndsAt: ends, Capacity: body.Capacity, Price: body.Price}
+		a.writeStatus(c, c.GetHeader("Idempotency-Key"), "session:create", http.StatusCreated, func() (any, error) { return a.store.createSession(c, in) })
+	})
+	api.POST("/sessions/:id/publish", func(c *gin.Context) {
+		var body struct {
+			Actor string `json:"actor"`
+		}
+		if c.ShouldBindJSON(&body) != nil {
+			body.Actor = "运营人员"
+		}
+		a.write(c, c.GetHeader("Idempotency-Key"), "session:publish:"+c.Param("id"), func() (any, error) { return a.store.publishSession(c, c.Param("id"), body.Actor) })
+	})
+	api.POST("/sessions/:id/sell", func(c *gin.Context) {
+		var body struct {
+			Quantity int    `json:"quantity"`
+			Actor    string `json:"actor"`
+		}
+		if c.ShouldBindJSON(&body) != nil || body.Quantity <= 0 {
+			fail(c, errInvalidInput)
+			return
+		}
+		a.write(c, c.GetHeader("Idempotency-Key"), "session:sell:"+c.Param("id"), func() (any, error) {
+			session, tickets, err := a.store.sellSession(c, c.Param("id"), body.Quantity, body.Actor)
+			return gin.H{"session": session, "tickets": tickets}, err
+		})
+	})
+	api.POST("/sessions/:id/checkin", func(c *gin.Context) {
+		var body struct {
+			TicketCode string `json:"ticketCode"`
+			Actor      string `json:"actor"`
+		}
+		if c.ShouldBindJSON(&body) != nil || strings.TrimSpace(body.TicketCode) == "" {
+			fail(c, errInvalidInput)
+			return
+		}
+		a.write(c, c.GetHeader("Idempotency-Key"), "session:checkin:"+c.Param("id")+":"+body.TicketCode, func() (any, error) { return a.store.checkinSession(c, c.Param("id"), body.TicketCode, body.Actor) })
+	})
+	api.POST("/sessions/:id/status", func(c *gin.Context) {
+		var body struct{ Status, Actor string }
+		if c.ShouldBindJSON(&body) != nil || strings.TrimSpace(body.Status) == "" {
+			fail(c, errInvalidInput)
+			return
+		}
+		a.write(c, c.GetHeader("Idempotency-Key"), "session:status:"+c.Param("id")+":"+body.Status, func() (any, error) { return a.store.transitionSession(c, c.Param("id"), body.Status, body.Actor) })
+	})
+	api.POST("/sessions/:id/settle", func(c *gin.Context) {
+		var body struct {
+			Actor string `json:"actor"`
+		}
+		_ = c.ShouldBindJSON(&body)
+		a.write(c, c.GetHeader("Idempotency-Key"), "session:settle:"+c.Param("id"), func() (any, error) { return a.store.settleSession(c, c.Param("id"), body.Actor) })
+	})
 	api.GET("/dashboard", func(c *gin.Context) {
 		list, total := a.store.listShipments(c, "", 1, 1000)
 		exceptions := a.store.listExceptions(c, "待处理")

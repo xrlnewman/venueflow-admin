@@ -17,3 +17,14 @@ test('VenueFlow writes use API and idempotency keys', async () => {
   assert.match(source, /fleetApi\.resolveException/)
   assert.match(source, /fleetApi\.confirmSettlement/)
 })
+
+test('VenueFlow exposes session ticketing and settlement operations', async () => {
+  const api = await readFile(new URL('../src/api.js', import.meta.url), 'utf8')
+  const source = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
+  assert.match(api, /sessions/)
+  assert.match(api, /checkin/)
+  assert.match(api, /settle/)
+  assert.match(source, /场次票务日结/)
+  assert.match(source, /票码唯一校验/)
+  assert.match(source, /完成日结/)
+})

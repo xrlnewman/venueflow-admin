@@ -1,0 +1,12 @@
+.sessions-panel{background:linear-gradient(140deg,#fff 0%,#f7fbfc 100%)}
+.session-head-meta{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;max-width:360px}
+.session-head-meta span{font-size:10px;color:#5a8291;background:#edf7f7;border:1px solid #d8eeee;border-radius:99px;padding:6px 9px}
+.session-board{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.session-row{border:1px solid #e2ebee;border-radius:13px;padding:17px;background:#fff;box-shadow:0 4px 14px rgba(33,78,92,.04)}
+.session-row-top{display:flex;justify-content:space-between;gap:12px}.session-id{font-size:10px;color:#8ca0ad;letter-spacing:.08em;margin-right:8px}
+.session-row h3{margin:10px 0 5px;font-size:16px;color:#234054}.session-row p{margin:0;color:#8798a4;font-size:11px}
+.session-price{text-align:right}.session-price strong{display:block;color:#d27c39;font-size:22px}.session-price small{color:#a1acb4;font-size:10px}
+.session-kpis{display:flex;align-items:center;gap:18px;border-top:1px solid #edf1f3;margin-top:15px;padding-top:13px;position:relative}.session-kpis span{font-size:11px;color:#8a9ba5}.session-kpis b{font-size:16px;color:#2b6476}.session-kpis small{display:block;font-size:10px;margin-top:3px}
+.session-progress{position:absolute;left:0;right:0;bottom:-9px;height:4px;border-radius:99px;background:#edf4f5;overflow:hidden}.session-progress i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#40b19a,#f1b268)}
+.session-row-footer{display:flex;justify-content:space-between;align-items:center;margin-top:22px;color:#9aa7b0;font-size:10px}.session-row-footer .primary:disabled{opacity:.55;cursor:not-allowed}
+@media(max-width:900px){.session-board{grid-template-columns:1fr}}@media(max-width:640px){.session-head-meta{display:none}.session-kpis{gap:10px}.session-row-footer{align-items:flex-end;gap:8px}}

@@ -23,4 +23,17 @@ export const fleetApi = {
   confirmSettlement: (id) => write(`/settlements/${encodeURIComponent(id)}/confirm`)
 }
 
+export const venueApi = {
+  venues: () => request('/venues'),
+  sessions: () => request('/sessions?page=1&pageSize=50'),
+  session: (id) => request(`/sessions/${encodeURIComponent(id)}`),
+  events: (id) => request(`/sessions/${encodeURIComponent(id)}/events`),
+  createSession: (payload) => write('/sessions', payload),
+  publish: (id) => write(`/sessions/${encodeURIComponent(id)}/publish`, { actor: '许汝林' }),
+  sell: (id, quantity) => write(`/sessions/${encodeURIComponent(id)}/sell`, { quantity, actor: '许汝林' }),
+  checkin: (id, ticketCode) => write(`/sessions/${encodeURIComponent(id)}/checkin`, { ticketCode, actor: '现场工作人员' }),
+  advance: (id, status) => write(`/sessions/${encodeURIComponent(id)}/status`, { status, actor: '许汝林' }),
+  settle: (id) => write(`/sessions/${encodeURIComponent(id)}/settle`, { actor: '许汝林' })
+}
+
 export { API_BASE }

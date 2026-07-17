@@ -22,6 +22,8 @@ var (
 	errNotFound          = errors.New("资源不存在")
 	errInvalidTransition = errors.New("状态流转不合法")
 	errDuplicate         = errors.New("资源已存在")
+	errInvalidInput      = errors.New("请求参数不合法")
+	errInventoryExceeded = errors.New("可售库存不足")
 )
 
 type Shipment struct {
@@ -58,19 +60,96 @@ type Settlement struct {
 	Amount                     float64
 }
 
+const (
+	SessionDraft             = "草稿"
+	SessionScheduled         = "已排期"
+	SessionSelling           = "售票中"
+	SessionActive            = "活动中"
+	SessionPendingSettlement = "待结算"
+	SessionSettled           = "已结算"
+	TicketAvailable          = "待入场"
+	TicketCheckedIn          = "已核销"
+)
+
+type Venue struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Address  string `json:"address"`
+	Capacity int    `json:"capacity"`
+	Status   string `json:"status"`
+}
+
+type Session struct {
+	ID                string    `json:"id"`
+	VenueID           string    `json:"venueId"`
+	Title             string    `json:"title"`
+	StartsAt          time.Time `json:"startsAt"`
+	EndsAt            time.Time `json:"endsAt"`
+	Capacity          int       `json:"capacity"`
+	Price             float64   `json:"price"`
+	Sold              int       `json:"sold"`
+	CheckedIn         int       `json:"checkedIn"`
+	PendingExceptions int       `json:"pendingExceptions"`
+	Status            string    `json:"status"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+}
+
+type Ticket struct {
+	ID          string     `json:"id"`
+	SessionID   string     `json:"sessionId"`
+	Code        string     `json:"code"`
+	Status      string     `json:"status"`
+	Price       float64    `json:"price"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	CheckedInAt *time.Time `json:"checkedInAt,omitempty"`
+}
+
+type SessionEvent struct {
+	ID         int64     `json:"id"`
+	SessionID  string    `json:"sessionId"`
+	Action     string    `json:"action"`
+	FromStatus string    `json:"fromStatus,omitempty"`
+	ToStatus   string    `json:"toStatus,omitempty"`
+	Actor      string    `json:"actor"`
+	Detail     string    `json:"detail,omitempty"`
+	CreatedAt  time.Time `json:"createdAt"`
+}
+
+type SessionSettlement struct {
+	ID          string    `json:"id"`
+	SessionID   string    `json:"sessionId"`
+	TicketCount int       `json:"ticketCount"`
+	Gross       float64   `json:"gross"`
+	Status      string    `json:"status"`
+	SettledAt   time.Time `json:"settledAt"`
+}
+
 type memoryStore struct {
-	mu          sync.RWMutex
-	shipments   map[string]Shipment
-	events      map[string][]ShipmentEvent
-	exceptions  map[string]Exception
-	drivers     []Driver
-	vehicles    []Vehicle
-	settlements []Settlement
-	nextEventID int64
+	mu                 sync.RWMutex
+	shipments          map[string]Shipment
+	events             map[string][]ShipmentEvent
+	exceptions         map[string]Exception
+	drivers            []Driver
+	vehicles           []Vehicle
+	settlements        []Settlement
+	nextEventID        int64
+	venues             map[string]Venue
+	sessions           map[string]Session
+	tickets            map[string]Ticket
+	sessionEvents      map[string][]SessionEvent
+	sessionSettlements map[string]SessionSettlement
+	nextSessionEventID int64
 }
 
 func newMemoryStore() *memoryStore {
-	s := &memoryStore{shipments: map[string]Shipment{}, events: map[string][]ShipmentEvent{}, exceptions: map[string]Exception{}, nextEventID: 1}
+	s := &memoryStore{shipments: map[string]Shipment{}, events: map[string][]ShipmentEvent{}, exceptions: map[string]Exception{}, nextEventID: 1, venues: map[string]Venue{}, sessions: map[string]Session{}, tickets: map[string]Ticket{}, sessionEvents: map[string][]SessionEvent{}, sessionSettlements: map[string]SessionSettlement{}, nextSessionEventID: 1}
+	s.venues = map[string]Venue{"VEN-001": {ID: "VEN-001", Name: "云栖会展中心", Address: "上海市静安区演示路 18 号", Capacity: 1200, Status: "营业中"}, "VEN-002": {ID: "VEN-002", Name: "星河艺术馆", Address: "上海市徐汇区演示路 66 号", Capacity: 600, Status: "营业中"}, "VEN-003": {ID: "VEN-003", Name: "城市公园草坪", Address: "上海市浦东新区演示公园", Capacity: 2000, Status: "营业中"}}
+	seedStart := time.Now().UTC().Add(24 * time.Hour)
+	s.sessions["VS-260720-001"] = Session{ID: "VS-260720-001", VenueID: "VEN-001", Title: "城市夜跑 · 夏季站", StartsAt: seedStart.Add(10 * time.Hour), EndsAt: seedStart.Add(13 * time.Hour), Capacity: 500, Price: 99, Sold: 326, CheckedIn: 188, Status: SessionSelling, CreatedAt: time.Now().UTC().Add(-5 * time.Hour), UpdatedAt: time.Now().UTC()}
+	s.sessions["VS-260721-002"] = Session{ID: "VS-260721-002", VenueID: "VEN-002", Title: "独立摄影展导览", StartsAt: seedStart.Add(34 * time.Hour), EndsAt: seedStart.Add(37*time.Hour + 30*time.Minute), Capacity: 240, Price: 68, Sold: 210, CheckedIn: 0, Status: SessionScheduled, CreatedAt: time.Now().UTC().Add(-3 * time.Hour), UpdatedAt: time.Now().UTC()}
+	s.sessions["VS-260719-003"] = Session{ID: "VS-260719-003", VenueID: "VEN-003", Title: "亲子自然课堂", StartsAt: seedStart.Add(-14 * time.Hour), EndsAt: seedStart.Add(-11 * time.Hour), Capacity: 180, Price: 49, Sold: 152, CheckedIn: 149, Status: SessionPendingSettlement, CreatedAt: time.Now().UTC().Add(-30 * time.Hour), UpdatedAt: time.Now().UTC()}
+	s.sessions["VS-260718-004"] = Session{ID: "VS-260718-004", VenueID: "VEN-001", Title: "品牌发布会 · 夏日专场", StartsAt: seedStart.Add(-38 * time.Hour), EndsAt: seedStart.Add(-35 * time.Hour), Capacity: 800, Price: 128, Sold: 688, CheckedIn: 642, Status: SessionSettled, CreatedAt: time.Now().UTC().Add(-52 * time.Hour), UpdatedAt: time.Now().UTC()}
 	s.drivers = []Driver{{"D-001", "周协调员", "13800000001", "A 厅 · 500 人", "进行中"}, {"D-002", "陈协调员", "13800000002", "B 厅 · 300 人", "进行中"}, {"D-003", "林协调员", "13800000003", "草坪 · 800 人", "休息中"}, {"D-004", "王协调员", "13800000004", "剧场 · 600 人", "进行中"}, {"D-005", "赵协调员", "13800000005", "会议室 · 80 人", "进行中"}, {"D-006", "孙协调员", "13800000006", "露台 · 120 人", "进行中"}}
 	s.vehicles = []Vehicle{{"V-001", "A 厅", "会展中心", "在线"}, {"V-002", "B 厅", "艺术馆", "在线"}, {"V-003", "草坪", "城市公园", "维护"}, {"V-004", "剧场", "文化中心", "在线"}}
 	now := time.Now().UTC()

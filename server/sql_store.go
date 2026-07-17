@@ -5,10 +5,294 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
 type sqlStore struct{ db *sql.DB }
+
+func (s *sqlStore) listVenues(ctx context.Context) []Venue {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, address, capacity, status FROM venues ORDER BY id`)
+	if err != nil {
+		return []Venue{}
+	}
+	defer rows.Close()
+	out := []Venue{}
+	for rows.Next() {
+		var v Venue
+		if rows.Scan(&v.ID, &v.Name, &v.Address, &v.Capacity, &v.Status) == nil {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func (s *sqlStore) listSessions(ctx context.Context, status string, page, pageSize int) ([]Session, int) {
+	var total int
+	count := `SELECT COUNT(*) FROM sessions`
+	args := []any{}
+	if strings.TrimSpace(status) != "" {
+		count += ` WHERE status = ?`
+		args = append(args, status)
+	}
+	if err := s.db.QueryRowContext(ctx, count, args...).Scan(&total); err != nil {
+		return []Session{}, 0
+	}
+	query := `SELECT id, venue_id, title, starts_at, ends_at, capacity, price, sold, checked_in, pending_exceptions, status, created_at, updated_at FROM sessions`
+	args = []any{}
+	if strings.TrimSpace(status) != "" {
+		query += ` WHERE status = ?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY starts_at LIMIT ? OFFSET ?`
+	args = append(args, pageSize, (page-1)*pageSize)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return []Session{}, total
+	}
+	defer rows.Close()
+	out := []Session{}
+	for rows.Next() {
+		var v Session
+		if rows.Scan(&v.ID, &v.VenueID, &v.Title, &v.StartsAt, &v.EndsAt, &v.Capacity, &v.Price, &v.Sold, &v.CheckedIn, &v.PendingExceptions, &v.Status, &v.CreatedAt, &v.UpdatedAt) == nil {
+			out = append(out, v)
+		}
+	}
+	return out, total
+}
+
+func (s *sqlStore) getSession(ctx context.Context, id string) (Session, error) {
+	var v Session
+	err := s.db.QueryRowContext(ctx, `SELECT id, venue_id, title, starts_at, ends_at, capacity, price, sold, checked_in, pending_exceptions, status, created_at, updated_at FROM sessions WHERE id = ?`, id).Scan(&v.ID, &v.VenueID, &v.Title, &v.StartsAt, &v.EndsAt, &v.Capacity, &v.Price, &v.Sold, &v.CheckedIn, &v.PendingExceptions, &v.Status, &v.CreatedAt, &v.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Session{}, errNotFound
+	}
+	if err != nil {
+		return Session{}, fmt.Errorf("查询场次: %w", err)
+	}
+	return v, nil
+}
+
+func (s *sqlStore) createSession(ctx context.Context, in Session) (Session, error) {
+	if strings.TrimSpace(in.ID) == "" || strings.TrimSpace(in.VenueID) == "" || strings.TrimSpace(in.Title) == "" || in.StartsAt.IsZero() || in.EndsAt.IsZero() || !in.EndsAt.After(in.StartsAt) || in.Capacity <= 0 || in.Price < 0 {
+		return Session{}, errInvalidInput
+	}
+	var venueID string
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM venues WHERE id = ?`, in.VenueID).Scan(&venueID); errors.Is(err, sql.ErrNoRows) {
+		return Session{}, errNotFound
+	} else if err != nil {
+		return Session{}, err
+	}
+	now := time.Now().UTC()
+	in.Status = SessionDraft
+	in.CreatedAt = now
+	in.UpdatedAt = now
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions (id,venue_id,title,starts_at,ends_at,capacity,price,sold,checked_in,pending_exceptions,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,0,0,0,?,?,?)`, in.ID, in.VenueID, in.Title, in.StartsAt, in.EndsAt, in.Capacity, in.Price, in.Status, in.CreatedAt, in.UpdatedAt)
+	if err != nil {
+		return Session{}, fmt.Errorf("创建场次: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO session_events (session_id,action,from_status,to_status,actor,detail,created_at) VALUES (?,?,?,?,?,?,?)`, in.ID, "创建场次", "", SessionDraft, "系统", "", now)
+	if err != nil {
+		return Session{}, err
+	}
+	return in, nil
+}
+
+func (s *sqlStore) publishSession(ctx context.Context, id, actor string) (Session, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET status = ?, updated_at = ? WHERE id = ? AND status = ?`, SessionScheduled, time.Now().UTC(), id, SessionDraft)
+	if err != nil {
+		return Session{}, err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		if _, e := s.getSession(ctx, id); errors.Is(e, errNotFound) {
+			return Session{}, errNotFound
+		}
+		return Session{}, errDuplicate
+	}
+	now := time.Now().UTC()
+	_, err = s.db.ExecContext(ctx, `INSERT INTO session_events (session_id,action,from_status,to_status,actor,detail,created_at) VALUES (?,?,?,?,?,?,?)`, id, "发布场次", SessionDraft, SessionScheduled, defaultActor(actor), "已通过排期审核", now)
+	if err != nil {
+		return Session{}, err
+	}
+	return s.getSession(ctx, id)
+}
+
+func (s *sqlStore) sellSession(ctx context.Context, id string, quantity int, actor string) (Session, []Ticket, error) {
+	if quantity <= 0 {
+		return Session{}, nil, errInvalidInput
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, nil, err
+	}
+	defer tx.Rollback()
+	var item Session
+	err = tx.QueryRowContext(ctx, `SELECT id,venue_id,title,starts_at,ends_at,capacity,price,sold,checked_in,pending_exceptions,status,created_at,updated_at FROM sessions WHERE id = ? FOR UPDATE`, id).Scan(&item.ID, &item.VenueID, &item.Title, &item.StartsAt, &item.EndsAt, &item.Capacity, &item.Price, &item.Sold, &item.CheckedIn, &item.PendingExceptions, &item.Status, &item.CreatedAt, &item.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Session{}, nil, errNotFound
+	}
+	if err != nil {
+		return Session{}, nil, err
+	}
+	if item.Status != SessionScheduled && item.Status != SessionSelling {
+		return Session{}, nil, errInvalidTransition
+	}
+	if item.Sold+quantity > item.Capacity {
+		return Session{}, nil, errInventoryExceeded
+	}
+	now := time.Now().UTC()
+	if item.Status == SessionScheduled {
+		if _, err = tx.ExecContext(ctx, `UPDATE sessions SET status=?,updated_at=? WHERE id=?`, SessionSelling, now, id); err != nil {
+			return Session{}, nil, err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO session_events (session_id,action,from_status,to_status,actor,detail,created_at) VALUES (?,?,?,?,?,?,?)`, id, "开始售票", SessionScheduled, SessionSelling, defaultActor(actor), "场次开放购票", now); err != nil {
+			return Session{}, nil, err
+		}
+		item.Status = SessionSelling
+	}
+	tickets := make([]Ticket, 0, quantity)
+	for i := 1; i <= quantity; i++ {
+		seq := item.Sold + i
+		code := fmt.Sprintf("%s-%04d", id, seq)
+		ticket := Ticket{ID: fmt.Sprintf("T-%s-%04d", id, seq), SessionID: id, Code: code, Status: TicketAvailable, Price: item.Price, CreatedAt: now}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO tickets (id,session_id,code,status,price,created_at) VALUES (?,?,?,?,?,?)`, ticket.ID, id, code, TicketAvailable, item.Price, now); err != nil {
+			return Session{}, nil, err
+		}
+		tickets = append(tickets, ticket)
+	}
+	item.Sold += quantity
+	item.UpdatedAt = now
+	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET status=?,sold=?,updated_at=? WHERE id=?`, item.Status, item.Sold, now, id); err != nil {
+		return Session{}, nil, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO session_events (session_id,action,from_status,to_status,actor,detail,created_at) VALUES (?,?,?,?,?,?,?)`, id, "售出门票", item.Status, item.Status, defaultActor(actor), fmt.Sprintf("本次售出 %d 张", quantity), now); err != nil {
+		return Session{}, nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Session{}, nil, err
+	}
+	return item, tickets, nil
+}
+
+func (s *sqlStore) checkinSession(ctx context.Context, id, code, actor string) (Ticket, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Ticket{}, err
+	}
+	defer tx.Rollback()
+	var ticket Ticket
+	err = tx.QueryRowContext(ctx, `SELECT id,session_id,code,status,price,created_at,checked_in_at FROM tickets WHERE code = ? FOR UPDATE`, code).Scan(&ticket.ID, &ticket.SessionID, &ticket.Code, &ticket.Status, &ticket.Price, &ticket.CreatedAt, &ticket.CheckedInAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Ticket{}, errNotFound
+	}
+	if err != nil {
+		return Ticket{}, err
+	}
+	if ticket.SessionID != id {
+		return Ticket{}, errNotFound
+	}
+	if ticket.Status == TicketCheckedIn {
+		return Ticket{}, errDuplicate
+	}
+	if ticket.Status != TicketAvailable {
+		return Ticket{}, errInvalidTransition
+	}
+	now := time.Now().UTC()
+	if _, err = tx.ExecContext(ctx, `UPDATE tickets SET status=?,checked_in_at=? WHERE code=?`, TicketCheckedIn, now, code); err != nil {
+		return Ticket{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET checked_in=checked_in+1,updated_at=? WHERE id=?`, now, id); err != nil {
+		return Ticket{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO session_events (session_id,action,from_status,to_status,actor,detail,created_at) VALUES (?,?,?,?,?,?,?)`, id, "核销票码", ticket.Status, ticket.Status, defaultActor(actor), "现场检票成功", now); err != nil {
+		return Ticket{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Ticket{}, err
+	}
+	ticket.Status = TicketCheckedIn
+	ticket.CheckedInAt = &now
+	return ticket, nil
+}
+
+func (s *sqlStore) transitionSession(ctx context.Context, id, status, actor string) (Session, error) {
+	item, err := s.getSession(ctx, id)
+	if err != nil {
+		return Session{}, err
+	}
+	if !allowedSessionTransition(item.Status, status) {
+		return Session{}, errInvalidTransition
+	}
+	now := time.Now().UTC()
+	if _, err = s.db.ExecContext(ctx, `UPDATE sessions SET status=?,updated_at=? WHERE id=?`, status, now, id); err != nil {
+		return Session{}, err
+	}
+	if _, err = s.db.ExecContext(ctx, `INSERT INTO session_events (session_id,action,from_status,to_status,actor,detail,created_at) VALUES (?,?,?,?,?,?,?)`, id, "推进状态", item.Status, status, defaultActor(actor), "运营人员确认状态", now); err != nil {
+		return Session{}, err
+	}
+	item.Status = status
+	item.UpdatedAt = now
+	return item, nil
+}
+
+func (s *sqlStore) settleSession(ctx context.Context, id, actor string) (SessionSettlement, error) {
+	item, err := s.getSession(ctx, id)
+	if err != nil {
+		return SessionSettlement{}, err
+	}
+	if item.Status != SessionPendingSettlement || time.Now().UTC().Before(item.EndsAt) || item.PendingExceptions > 0 {
+		return SessionSettlement{}, errInvalidTransition
+	}
+	var existing SessionSettlement
+	e := s.db.QueryRowContext(ctx, `SELECT id,session_id,ticket_count,gross,status,settled_at FROM session_settlements WHERE session_id=?`, id).Scan(&existing.ID, &existing.SessionID, &existing.TicketCount, &existing.Gross, &existing.Status, &existing.SettledAt)
+	if e == nil {
+		return existing, errDuplicate
+	}
+	if !errors.Is(e, sql.ErrNoRows) {
+		return SessionSettlement{}, e
+	}
+	now := time.Now().UTC()
+	settlement := SessionSettlement{ID: "SET-" + id, SessionID: id, TicketCount: item.Sold, Gross: float64(item.Sold) * item.Price, Status: "已结算", SettledAt: now}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SessionSettlement{}, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET status=?,updated_at=? WHERE id=? AND status=?`, SessionSettled, now, id, SessionPendingSettlement); err != nil {
+		return SessionSettlement{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO session_settlements (id,session_id,ticket_count,gross,status,settled_at) VALUES (?,?,?,?,?,?)`, settlement.ID, id, settlement.TicketCount, settlement.Gross, settlement.Status, settlement.SettledAt); err != nil {
+		return SessionSettlement{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO session_events (session_id,action,from_status,to_status,actor,detail,created_at) VALUES (?,?,?,?,?,?,?)`, id, "完成日结", SessionPendingSettlement, SessionSettled, defaultActor(actor), fmt.Sprintf("售出 %d 张，实收 %.2f", item.Sold, settlement.Gross), now); err != nil {
+		return SessionSettlement{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return SessionSettlement{}, err
+	}
+	return settlement, nil
+}
+
+func (s *sqlStore) listSessionEvents(ctx context.Context, id string) ([]SessionEvent, error) {
+	if _, err := s.getSession(ctx, id); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,session_id,action,from_status,to_status,actor,detail,created_at FROM session_events WHERE session_id=? ORDER BY id`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SessionEvent{}
+	for rows.Next() {
+		var v SessionEvent
+		if err := rows.Scan(&v.ID, &v.SessionID, &v.Action, &v.FromStatus, &v.ToStatus, &v.Actor, &v.Detail, &v.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
 
 func (s *sqlStore) createShipment(ctx context.Context, in Shipment) (Shipment, error) {
 	if in.Status == "" {

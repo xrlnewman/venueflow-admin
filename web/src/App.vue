@@ -1,16 +1,21 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { fleetApi } from './api'
+import { fleetApi, venueApi } from './api'
 
 const nav = [
   ['overview', '总览', '⌂'], ['shipments', '活动订单调度', '↗'], ['drivers', '场地资源场馆工作人员', '◉'],
-  ['exceptions', '场地事件中心', '!'], ['settlements', '对账结算', '￥']
+  ['sessions', '场次票务日结', '▣'], ['exceptions', '场地事件中心', '!'], ['settlements', '对账结算', '￥']
 ]
 const active = ref('overview')
 const toast = ref('')
 const syncing = ref(false)
 const live = ref(false)
 const settlements = ref([])
+const venues = ref([])
+const sessions = ref([
+  { id: 'VS-DEMO-001', venueId: 'VEN-001', venueName: '云栖会展中心', title: '城市夜跑 · 夏季站', startsAt: '2026-07-20T18:00:00Z', endsAt: '2026-07-20T21:00:00Z', capacity: 500, sold: 326, checkedIn: 188, price: 99, status: '售票中' },
+  { id: 'VS-DEMO-002', venueId: 'VEN-002', venueName: '星河艺术馆', title: '独立摄影展导览', startsAt: '2026-07-21T14:00:00Z', endsAt: '2026-07-21T17:30:00Z', capacity: 240, sold: 240, checkedIn: 0, price: 68, status: '已排期' }
+])
 const shipments = ref([
   { id: 'VN-260716-018', route: '会展中心 → A 厅', cargo: '品牌发布会 · 500 人', driver: '周协调员', vehicle: 'A 厅 · 500 人', eta: '14:35', status: '进行中', tone: 'blue' },
   { id: 'VN-260716-017', route: '艺术馆 → B 厅', cargo: '艺术展览 · 300 人', driver: '陈协调员', vehicle: 'B 厅 · 300 人', eta: '15:10', status: '已锁场', tone: 'orange' },
@@ -26,19 +31,39 @@ const exceptions = ref([
 const title = computed(() => nav.find((item) => item[0] === active.value)?.[1] || '总览')
 function flash(message) { toast.value = message; setTimeout(() => { toast.value = '' }, 2200) }
 function toneFor(status) { return ({ '进行中': 'blue', '已锁场': 'orange', '已完成': 'green', '待预订': 'purple', '待结算': 'blue', '已取消': 'red' })[status] || 'purple' }
+function sessionTone(status) { return ({ '售票中': 'blue', '已排期': 'orange', '活动中': 'green', '待结算': 'purple', '已结算': 'green' })[status] || 'purple' }
 async function refresh() {
   syncing.value = true
   try {
-    const [shipmentData, exceptionData, settlementData] = await Promise.all([fleetApi.shipments(), fleetApi.exceptions(), fleetApi.settlements()])
+    const [shipmentData, exceptionData, settlementData, venueData, sessionData] = await Promise.all([fleetApi.shipments(), fleetApi.exceptions(), fleetApi.settlements(), venueApi.venues(), venueApi.sessions()])
     shipments.value = shipmentData.list.map((item) => ({ ...item, tone: toneFor(item.status) }))
     exceptions.value = exceptionData.list
     settlements.value = settlementData.list
+    venues.value = venueData.list
+    sessions.value = sessionData.list.map((item) => ({ ...item, tone: sessionTone(item.status), venueName: venueData.list.find((venue) => venue.id === item.venueId)?.name || item.venueId }))
     live.value = true
     flash('已同步线上数据')
   } catch (error) {
     live.value = false
     flash(`演示数据：${error.message}`)
   } finally { syncing.value = false }
+}
+async function sessionAction(item, action) {
+  try {
+    if (action === 'publish') await venueApi.publish(item.id)
+    if (action === 'sell') await venueApi.sell(item.id, 1)
+    if (action === 'active') await venueApi.advance(item.id, '活动中')
+    if (action === 'settle') await venueApi.settle(item.id)
+    flash(`${item.title} 已完成${action === 'sell' ? '售票' : action === 'settle' ? '日结' : '状态更新'}`); await refresh()
+  } catch (error) { flash(error.message) }
+}
+function sessionActionLabel(item) {
+  if (item.status === '草稿') return ['publish', '发布排期']
+  if (item.status === '已排期') return ['sell', '开始售票']
+  if (item.status === '售票中') return ['active', '标记活动中']
+  if (item.status === '活动中') return ['settle', '进入日结']
+  if (item.status === '待结算') return ['settle', '完成日结']
+  return ['', '已结算']
 }
 async function assign(item) {
   try { const updated = await fleetApi.assignShipment(item.id, item.driver); Object.assign(item, updated, { tone: toneFor(updated.status) }); flash(`${item.id} 已分配给 ${item.driver}`); await refresh() }
@@ -86,9 +111,10 @@ onMounted(refresh)
       </template>
       <section v-else-if="active === 'shipments'" class="panel full"><div class="panel-head"><div><h2>活动订单调度</h2><p>{{ shipments.length }} 条活动订单 · 创建、锁场、现场服务、结算全流程</p></div><button class="primary small" @click="createShipment">＋ 新建活动订单</button></div><div class="table"><div class="table-head"><span>活动订单 / 场地</span><span>活动与容量</span><span>场馆协调员 / 场地资源</span><span>预计开始</span><span>状态</span><span>动作</span></div><div v-for="item in shipments" :key="item.id" class="table-row"><span><strong>{{ item.id }}</strong><small>{{ item.route }}</small></span><span>{{ item.cargo }}</span><span>{{ item.driver || '待分配' }}<small>{{ item.vehicle || '—' }}</small></span><span>{{ item.eta }}</span><span><b :class="['pill', item.tone]">{{ item.status }}</b></span><span><button v-if="item.status === '待预订' || item.status === '已锁场'" class="text-action" @click="assign(item)">确认锁场</button><button v-else-if="item.status === '进行中' || item.status === '待结算'" class="text-action" @click="advance(item)">{{ item.status === '进行中' ? '提交结算' : '完成归档' }}</button><button v-else class="text-action muted-action" @click="flash(`${item.id} 已完成闭环`)">已闭环</button></span></div></div></section>
       <section v-else-if="active === 'drivers'" class="panel full"><div class="panel-head"><div><h2>场地资源场馆工作人员</h2><p>58 个接入场地资源 · 42 个正在使用</p></div><button class="link" @click="flash('场地资源导出任务已创建')">导出名单 ↓</button></div><div class="driver-grid"><article v-for="(driver, index) in ['周协调员','陈协调员','林协调员','王协调员','赵协调员','孙协调员']" :key="driver" class="driver-card"><div class="driver-avatar">{{ driver[0] }}</div><div><strong>{{ driver }}</strong><small>{{ ['A 厅 · 500 人','B 厅 · 300 人','草坪 · 800 人','剧场 · 600 人','会议室 · 80 人','露台 · 120 人'][index] }}</small></div><span :class="['online', index === 3 ? 'busy' : '']">{{ index === 3 ? '休息中' : '进行中' }}</span><b>{{ [98, 96, 94, 88, 97, 91][index] }}<small> 分</small></b></article></div></section>
+      <section v-else-if="active === 'sessions'" class="panel full sessions-panel"><div class="panel-head"><div><h2>场次票务日结</h2><p>{{ sessions.length }} 场活动 · 排期、售票、入场核销与收入日结</p></div><div class="session-head-meta"><span v-for="venue in venues" :key="venue.id">{{ venue.name }} {{ venue.capacity }}席</span></div></div><div class="session-board"><article v-for="item in sessions" :key="item.id" class="session-row"><div class="session-row-top"><div><span class="session-id">{{ item.id }}</span><span :class="['pill', item.tone]">{{ item.status }}</span><h3>{{ item.title }}</h3><p>{{ item.venueName || item.venueId }} · {{ new Date(item.startsAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }} - {{ new Date(item.endsAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}</p></div><div class="session-price"><strong>¥{{ item.price }}</strong><small>单人票</small></div></div><div class="session-kpis"><span><b>{{ item.sold }}</b> / {{ item.capacity }} <small>已售名额</small></span><span><b>{{ item.checkedIn || 0 }}</b> <small>已核销入场</small></span><span><b>{{ item.sold ? Math.round((item.checkedIn || 0) / item.sold * 100) : 0 }}%</b> <small>到场率</small></span><div class="session-progress"><i :style="{ width: `${Math.min((item.sold / item.capacity) * 100, 100)}%` }"></i></div></div><div class="session-row-footer"><span>票码唯一校验 · 操作自动留痕</span><button class="primary small" :disabled="!sessionActionLabel(item)[0]" @click="sessionAction(item, sessionActionLabel(item)[0])">{{ sessionActionLabel(item)[1] }}</button></div></article><p v-if="!sessions.length" class="empty">暂无排期场次，先创建一场活动吧 ✦</p></div></section>
       <section v-else-if="active === 'exceptions'" class="panel full"><div class="panel-head"><div><h2>场地事件中心</h2><p>按优先级处理现场服务中的场地事件事件</p></div><span class="filter-chip">全部场地事件　⌄</span></div><div class="exception-table"><div v-for="item in exceptions" :key="item.id" class="exception-card"><span :class="['exception-icon', item.tone]">!</span><div><strong>{{ item.id }} · {{ item.type }}</strong><p>{{ item.text }}</p><small>创建于 12 分钟前 · 自动规则提醒</small></div><button class="primary small" @click="resolve(item)">标记已处理</button></div><p v-if="!exceptions.length" class="empty">暂无待处理场地事件 ✦</p></div></section>
       <section v-else class="panel full"><div class="panel-head"><div><h2>对账结算</h2><p>本月现场服务服务费与场馆工作人员结算进度</p></div><button class="primary small" @click="confirmSettlement">确认待结算</button></div><div class="settlement-summary"><div><span>本月应付</span><strong>¥{{ settlements.reduce((sum, item) => sum + Number(item.amount || 0), 0).toLocaleString() }}</strong><small>数据来自结算服务</small></div><div><span>待确认结算单</span><strong>{{ settlements.filter((item) => item.status !== '已结算').length }}</strong><small>可确认后留痕</small></div><div><span>平均单价</span><strong>¥42.6</strong><small>较上月 +6.4%</small></div></div><div class="table compact"><div class="table-head"><span>结算周期</span><span>场馆工作人员数</span><span>活动订单数</span><span>金额</span><span>状态</span></div><div v-for="row in settlements" :key="row.id" class="table-row"><span><strong>{{ row.period }}</strong></span><span>{{ row.driverCount }}</span><span>{{ row.shipmentCount }}</span><span>¥{{ Number(row.amount).toLocaleString() }}</span><b :class="['pill', row.status === '已结算' ? 'green' : 'orange']">{{ row.status }}</b></div></div></section>
-      <footer>VenueFlow 场馆运营中心 · 免费开源 · MySQL 8.4 + Redis 8 · 演示数据</footer>
+      <footer>VenueFlow 场馆运营中心 · 场次、票务、现场核销与日结 · MySQL 8.4 + Redis 8</footer>
       <div v-if="toast" class="toast">{{ toast }}</div>
     </main>
   </div>
